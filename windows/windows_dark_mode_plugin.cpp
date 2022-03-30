@@ -13,24 +13,65 @@
 #include <map>
 #include <memory>
 #include <sstream>
+#include <flutter/event_channel.h>
+#include <mutex>
 
 namespace {
 
+
+template<typename T = flutter::EncodableValue>
+class MyStreamHandler: public flutter::StreamHandler<T> {
+public:
+	MyStreamHandler () = default;
+	virtual ~MyStreamHandler () = default;
+
+	void on_callback (flutter::EncodableValue _data) {
+            std::unique_lock<std::mutex> _ul (m_mtx);
+            if (m_sink.get ())
+    		    m_sink.get ()->Success (_data);
+    	}
+protected:
+	std::unique_ptr<flutter::StreamHandlerError<T>> OnListenInternal (const T *arguments, std::unique_ptr<flutter::EventSink<T>> &&events) override {
+        std::unique_lock<std::mutex> _ul (m_mtx);
+		m_sink = std::move (events);
+        return nullptr;
+	}
+	std::unique_ptr<flutter::StreamHandlerError<T>> OnCancelInternal (const T *arguments) override {
+        std::unique_lock<std::mutex> _ul (m_mtx);
+		m_sink.release ();
+        return nullptr;
+	}
+private:
+	flutter::EncodableValue m_value;
+    std::mutex m_mtx;
+	std::unique_ptr<flutter::EventSink<T>> m_sink;
+};
+
+
 class WindowsDarkModePlugin : public flutter::Plugin {
  public:
+  // This method will register the Plugin with Flutter Engine
   static void RegisterWithRegistrar(flutter::PluginRegistrarWindows *registrar);
-
-  WindowsDarkModePlugin();
-
+  // Constructor
+  WindowsDarkModePlugin(flutter::PluginRegistrarWindows *registrar);
+  // Destructor
   virtual ~WindowsDarkModePlugin();
 
  private:
   // Called when a method is called on this plugin's channel from Dart.
-  std::string  WindowsDarkModePlugin::getPlatformVersion();
-  bool WindowsDarkModePlugin::isDarkModeAppEnabled();
-  void HandleMethodCall(
-      const flutter::MethodCall<flutter::EncodableValue> &method_call,
+   void HandleMethodCall(const flutter::MethodCall<flutter::EncodableValue> &method_call,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
+  // Specialized method called from HandleMethodCall
+  std::string  WindowsDarkModePlugin::getPlatformVersion();
+  // Specialized method called from HandleMethodCall
+  bool WindowsDarkModePlugin::isDarkModeAppEnabled();
+  // Our WndProc Callback
+  std::optional<LRESULT> HandleWindowProc(HWND hWnd,UINT message,WPARAM wParam,LPARAM lParam);
+  
+  int window_proc_id = -1;
+  MyStreamHandler<> *m_handler;
+  std::unique_ptr<flutter::EventChannel<flutter::EncodableValue>> m_event_channel;
+  flutter::PluginRegistrarWindows* registrar;
 };
 
 // static
@@ -41,19 +82,55 @@ void WindowsDarkModePlugin::RegisterWithRegistrar(
           registrar->messenger(), "windows_dark_mode",
           &flutter::StandardMethodCodec::GetInstance());
 
-  auto plugin = std::make_unique<WindowsDarkModePlugin>();
+  auto plugin = std::make_unique<WindowsDarkModePlugin>(registrar);
 
+plugin->m_event_channel = std::make_unique<flutter::EventChannel<flutter::EncodableValue>> (
+          registrar->messenger (), "windows_dark_mode/dark_mode_callback",
+          &flutter::StandardMethodCodec::GetInstance ()
+       );
   channel->SetMethodCallHandler(
       [plugin_pointer = plugin.get()](const auto &call, auto result) {
         plugin_pointer->HandleMethodCall(call, std::move(result));
       });
 
+
+MyStreamHandler<> *_handler=new MyStreamHandler<> ();
+     plugin->m_handler = _handler;
+     auto _obj_stm_handle = static_cast<flutter::StreamHandler<flutter::EncodableValue>*> (plugin->m_handler);
+     std::unique_ptr<flutter::StreamHandler<flutter::EncodableValue>> _ptr {_obj_stm_handle};
+     plugin->m_event_channel->SetStreamHandler (std::move (_ptr));
+	 
+	 
   registrar->AddPlugin(std::move(plugin));
 }
 
-WindowsDarkModePlugin::WindowsDarkModePlugin() {}
+std::optional<LRESULT> WindowsDarkModePlugin::HandleWindowProc(HWND hWnd,UINT message,WPARAM wParam,LPARAM lParam)
+{
+ std::optional<LRESULT> result = std::nullopt;
+  if (message == WM_SETTINGCHANGE)
+             {
+                if (!lstrcmp(LPCTSTR(lParam), L"ImmersiveColorSet"))
+                        {
+                           if (m_handler!=nullptr) {
+                            m_handler->on_callback (flutter::EncodableValue(isDarkModeAppEnabled()));
+                            return true;
+                           }
+                        }
+             }
+ return result;
+}
 
-WindowsDarkModePlugin::~WindowsDarkModePlugin() {}
+WindowsDarkModePlugin::WindowsDarkModePlugin(flutter::PluginRegistrarWindows *registrar) {
+   this->registrar=registrar;
+   window_proc_id = registrar->RegisterTopLevelWindowProcDelegate(
+        [this](HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+          return HandleWindowProc(hWnd, message, wParam, lParam);
+        });
+}
+
+WindowsDarkModePlugin::~WindowsDarkModePlugin() {
+  registrar->UnregisterTopLevelWindowProcDelegate(window_proc_id);
+}
 
 std::string  WindowsDarkModePlugin::getPlatformVersion(){
     std::ostringstream version_stream;

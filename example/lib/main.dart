@@ -50,16 +50,27 @@ class _MyAppState extends State<MyApp> {
 
   @override
   Widget build(BuildContext context) {
-
-    return MaterialApp(
-      home: Scaffold(
-        appBar: AppBar(
-          title: const Text('Plugin example app'),
-        ),
-        body: Center(
-          child: Text('Running on: $_platformVersion\nDark Mode is : $_darkModeEnabled'),
-        ),
-      ),
-    );
+    return StreamBuilder<ThemeMode>(
+        stream: WindowsDarkMode.DarkModeStream(),
+        builder: (context, snapshot) {
+          return MaterialApp(
+            themeMode: snapshot.data,
+            theme: ThemeData(
+              brightness: Brightness.light,
+            ),
+            darkTheme: ThemeData(
+              brightness: Brightness.dark,
+            ),
+            home: Scaffold(
+              appBar: AppBar(
+                title: const Text('Plugin example app'),
+              ),
+              body: Center(
+                child: Text(
+                    'Running on: $_platformVersion'),
+              ),
+            ),
+          );
+        });
   }
 }
